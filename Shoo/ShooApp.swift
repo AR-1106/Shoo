@@ -29,6 +29,7 @@ struct ShooApp: App {
     @StateObject private var appState = AppState.shared
     @StateObject private var updater = UpdateManager.shared
     @AppStorage("defaultClickAction") private var defaultClickAction: ActionType = .close
+    @AppStorage("autoCheckForUpdates") private var autoCheckForUpdates: Bool = true
 
     var body: some Scene {
         MenuBarExtra("Shoo", systemImage: appState.isEnabled ? "rectangle.badge.xmark" : "rectangle.badge.xmark") {
@@ -38,7 +39,7 @@ struct ShooApp: App {
             
             Divider()
             
-            Picker("Default Red Button Action", selection: $defaultClickAction) {
+            Picker("Default X Button Action", selection: $defaultClickAction) {
                 ForEach(ActionType.allCases, id: \.self) { type in
                     Text(type.rawValue).tag(type)
                 }
@@ -47,10 +48,11 @@ struct ShooApp: App {
             
             Divider()
             
-            Button(updater.menuLabel) {
-                updater.checkForUpdates()
+            Button("Check for Updates...") {
+                updater.checkForUpdates(showWindow: true)
             }
-            .disabled(updater.isUpdating)
+            
+            Toggle("Auto-Check for Updates", isOn: $autoCheckForUpdates)
             
             Divider()
             
@@ -64,6 +66,16 @@ struct ShooApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         OnboardingManager.shared.checkPermissionOnLaunch()
+        
+        // Auto-check for updates on launch (after a short delay)
+        if UserDefaults.standard.object(forKey: "autoCheckForUpdates") == nil {
+            UserDefaults.standard.set(true, forKey: "autoCheckForUpdates")
+        }
+        if UserDefaults.standard.bool(forKey: "autoCheckForUpdates") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                UpdateManager.shared.checkForUpdates(showWindow: false)
+            }
+        }
     }
 }
 
@@ -875,27 +887,46 @@ struct DoneView: View {
 
 // MARK: - Update Manager
 
+enum UpdateState {
+    case idle
+    case checking
+    case upToDate(version: String)
+    case updateAvailable(version: String)
+    case downloading(version: String, progress: Double)
+    case installing
+    case restarting
+    case failed(message: String)
+}
+
 class UpdateManager: ObservableObject {
     static let shared = UpdateManager()
     
     private let repo = "AR-1106/Shoo"
-    private let currentVersion: String
+    let currentVersion: String
     
-    @Published var menuLabel: String = "Check for Updates..."
+    @Published var state: UpdateState = .idle
     @Published var isUpdating: Bool = false
+    
+    private var window: NSWindow?
+    private var observation: NSKeyValueObservation?
     
     init() {
         self.currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     }
     
-    func checkForUpdates() {
-        guard !isUpdating else { return }
+    func checkForUpdates(showWindow: Bool) {
+        guard !isUpdating else {
+            if showWindow { self.showWindow() }
+            return
+        }
         isUpdating = true
-        menuLabel = "Checking..."
+        state = .checking
+        
+        if showWindow { self.showWindow() }
         
         let urlStr = "https://api.github.com/repos/\(repo)/releases/latest"
         guard let url = URL(string: urlStr) else {
-            fail("Invalid URL")
+            fail("Invalid URL", showWindow: showWindow)
             return
         }
         
@@ -906,39 +937,38 @@ class UpdateManager: ObservableObject {
             guard let self = self else { return }
             
             if let error = error {
-                self.fail("Network error: \(error.localizedDescription)")
+                self.fail("Network error: \(error.localizedDescription)", showWindow: showWindow)
                 return
             }
             
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let tagName = json["tag_name"] as? String else {
-                self.fail("Could not parse release info")
+                self.fail("Could not parse release info", showWindow: showWindow)
                 return
             }
             
             let latestVersion = tagName.replacingOccurrences(of: "v", with: "")
             
             if self.isNewer(latestVersion, than: self.currentVersion) {
-                // Find the DMG asset
                 if let assets = json["assets"] as? [[String: Any]],
                    let dmgAsset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".dmg") == true }),
                    let downloadURL = dmgAsset["browser_download_url"] as? String {
                     DispatchQueue.main.async {
-                        self.menuLabel = "Downloading v\(latestVersion)..."
+                        self.state = .updateAvailable(version: latestVersion)
+                        if !showWindow { self.showWindow() }
                     }
-                    self.downloadAndInstall(from: downloadURL, version: latestVersion)
+                    // Auto-start download after a brief pause to show the "available" state
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        self.downloadAndInstall(from: downloadURL, version: latestVersion)
+                    }
                 } else {
-                    self.fail("No DMG found in release")
+                    self.fail("No DMG found in release", showWindow: showWindow)
                 }
             } else {
                 DispatchQueue.main.async {
-                    self.menuLabel = "✓ Up to date (v\(self.currentVersion))"
+                    self.state = .upToDate(version: self.currentVersion)
                     self.isUpdating = false
-                    // Reset label after 5 seconds
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                        self.menuLabel = "Check for Updates..."
-                    }
                 }
             }
         }.resume()
@@ -957,28 +987,58 @@ class UpdateManager: ObservableObject {
         return false
     }
     
+    func showWindow() {
+        DispatchQueue.main.async {
+            if self.window == nil {
+                let view = UpdateView().environmentObject(self)
+                let win = NSWindow(
+                    contentRect: NSRect(x: 0, y: 0, width: 380, height: 260),
+                    styleMask: [.titled, .closable, .fullSizeContentView],
+                    backing: .buffered, defer: false)
+                win.isReleasedWhenClosed = false
+                win.titlebarAppearsTransparent = true
+                win.titleVisibility = .hidden
+                win.isMovableByWindowBackground = true
+                win.contentView = NSHostingView(rootView: view)
+                win.center()
+                self.window = win
+            }
+            self.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+    
+    func closeWindow() {
+        window?.close()
+        window = nil
+        if case .upToDate = state {} else if case .failed = state {} else { return }
+        state = .idle
+    }
+    
     private func downloadAndInstall(from urlStr: String, version: String) {
         guard let url = URL(string: urlStr) else {
-            fail("Invalid download URL")
+            fail("Invalid download URL", showWindow: true)
             return
         }
         
-        URLSession.shared.downloadTask(with: url) { [weak self] tmpURL, response, error in
+        let task = URLSession.shared.downloadTask(with: url) { [weak self] tmpURL, response, error in
             guard let self = self, let tmpURL = tmpURL else {
-                self?.fail("Download failed")
+                self?.fail("Download failed", showWindow: true)
                 return
+            }
+            
+            DispatchQueue.main.async {
+                self.state = .installing
             }
             
             do {
                 let dmgPath = "/tmp/Shoo_update.dmg"
                 let mountPoint = "/tmp/shoo_update_mount"
                 
-                // Move downloaded file
                 let fm = FileManager.default
                 if fm.fileExists(atPath: dmgPath) { try fm.removeItem(atPath: dmgPath) }
                 try fm.moveItem(at: tmpURL, to: URL(fileURLWithPath: dmgPath))
                 
-                // Mount DMG
                 let mountProc = Process()
                 mountProc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
                 mountProc.arguments = ["attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse", "-quiet"]
@@ -986,22 +1046,19 @@ class UpdateManager: ObservableObject {
                 mountProc.waitUntilExit()
                 
                 guard mountProc.terminationStatus == 0 else {
-                    self.fail("Failed to mount DMG")
+                    self.fail("Failed to mount DMG", showWindow: true)
                     return
                 }
                 
-                // Find the .app in the mounted volume
                 let appSource = "\(mountPoint)/Shoo.app"
                 guard fm.fileExists(atPath: appSource) else {
-                    self.fail("Shoo.app not found in DMG")
+                    self.fail("Shoo.app not found in DMG", showWindow: true)
                     self.unmount(mountPoint)
                     return
                 }
                 
-                // Get the current app's path
                 let currentAppPath = Bundle.main.bundlePath
                 
-                // Create an update script that waits for the app to quit, then replaces it
                 let script = """
                 #!/bin/bash
                 sleep 1
@@ -1017,31 +1074,40 @@ class UpdateManager: ObservableObject {
                 let scriptPath = "/tmp/shoo_update.sh"
                 try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
                 
-                // Make executable
                 let chmodProc = Process()
                 chmodProc.executableURL = URL(fileURLWithPath: "/bin/chmod")
                 chmodProc.arguments = ["+x", scriptPath]
                 try chmodProc.run()
                 chmodProc.waitUntilExit()
                 
-                // Launch the update script in background
                 let updateProc = Process()
                 updateProc.executableURL = URL(fileURLWithPath: "/bin/bash")
                 updateProc.arguments = [scriptPath]
                 try updateProc.run()
                 
                 DispatchQueue.main.async {
-                    self.menuLabel = "Restarting..."
-                    // Quit the app so the script can replace it
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.state = .restarting
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         NSApplication.shared.terminate(nil)
                     }
                 }
                 
             } catch {
-                self.fail("Update error: \(error.localizedDescription)")
+                self.fail("Update error: \(error.localizedDescription)", showWindow: true)
             }
-        }.resume()
+        }
+        
+        // Observe download progress
+        observation = task.progress.observe(\.fractionCompleted) { [weak self] progress, _ in
+            DispatchQueue.main.async {
+                self?.state = .downloading(version: version, progress: progress.fractionCompleted)
+            }
+        }
+        
+        DispatchQueue.main.async {
+            self.state = .downloading(version: version, progress: 0)
+        }
+        task.resume()
     }
     
     private func unmount(_ path: String) {
@@ -1052,14 +1118,172 @@ class UpdateManager: ObservableObject {
         proc.waitUntilExit()
     }
     
-    private func fail(_ message: String) {
+    private func fail(_ message: String, showWindow: Bool) {
         print("[Shoo Update] \(message)")
         DispatchQueue.main.async {
-            self.menuLabel = "Update failed"
+            self.state = .failed(message: message)
             self.isUpdating = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                self.menuLabel = "Check for Updates..."
+            if showWindow { self.showWindow() }
+        }
+    }
+}
+
+// MARK: - Update Window View
+
+struct UpdateView: View {
+    @EnvironmentObject var updater: UpdateManager
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            
+            updateIcon
+            updateTitle
+            updateSubtitle
+            
+            if case .downloading(_, let progress) = updater.state {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .padding(.horizontal, 40)
             }
+            
+            if case .installing = updater.state {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            
+            Spacer()
+            
+            updateButton
+        }
+        .padding(32)
+        .frame(width: 380, height: 260)
+    }
+    
+    @ViewBuilder
+    private var updateIcon: some View {
+        switch updater.state {
+        case .checking:
+            ProgressView()
+                .controlSize(.large)
+                .frame(width: 48, height: 48)
+        case .upToDate:
+            Image(systemName: "checkmark.circle.fill")
+                .resizable()
+                .frame(width: 48, height: 48)
+                .foregroundColor(.green)
+        case .updateAvailable:
+            Image(systemName: "arrow.down.circle.fill")
+                .resizable()
+                .frame(width: 48, height: 48)
+                .foregroundColor(.blue)
+        case .downloading:
+            Image(systemName: "arrow.down.circle")
+                .resizable()
+                .frame(width: 48, height: 48)
+                .foregroundColor(.blue)
+        case .installing, .restarting:
+            Image(systemName: "gear.circle.fill")
+                .resizable()
+                .frame(width: 48, height: 48)
+                .foregroundColor(.orange)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .resizable()
+                .frame(width: 48, height: 48)
+                .foregroundColor(.red)
+        case .idle:
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .resizable()
+                .frame(width: 48, height: 48)
+                .foregroundColor(.secondary)
+        }
+    }
+    
+    @ViewBuilder
+    private var updateTitle: some View {
+        switch updater.state {
+        case .checking:
+            Text("Checking for Updates...")
+                .font(.system(size: 18, weight: .semibold))
+        case .upToDate(let version):
+            Text("You're Up to Date")
+                .font(.system(size: 18, weight: .semibold))
+        case .updateAvailable(let version):
+            Text("Update Available")
+                .font(.system(size: 18, weight: .semibold))
+        case .downloading(let version, _):
+            Text("Downloading v\(version)...")
+                .font(.system(size: 18, weight: .semibold))
+        case .installing:
+            Text("Installing Update...")
+                .font(.system(size: 18, weight: .semibold))
+        case .restarting:
+            Text("Restarting Shoo...")
+                .font(.system(size: 18, weight: .semibold))
+        case .failed:
+            Text("Update Failed")
+                .font(.system(size: 18, weight: .semibold))
+        case .idle:
+            Text("Software Update")
+                .font(.system(size: 18, weight: .semibold))
+        }
+    }
+    
+    @ViewBuilder
+    private var updateSubtitle: some View {
+        switch updater.state {
+        case .checking:
+            Text("Contacting GitHub...")
+                .foregroundColor(.secondary)
+                .font(.system(size: 13))
+        case .upToDate(let version):
+            Text("Shoo v\(version) is the latest version.")
+                .foregroundColor(.secondary)
+                .font(.system(size: 13))
+        case .updateAvailable(let version):
+            Text("Shoo v\(version) is ready to download.")
+                .foregroundColor(.secondary)
+                .font(.system(size: 13))
+        case .downloading(_, let progress):
+            Text("\(Int(progress * 100))% complete")
+                .foregroundColor(.secondary)
+                .font(.system(size: 13))
+        case .installing:
+            Text("Please wait...")
+                .foregroundColor(.secondary)
+                .font(.system(size: 13))
+        case .restarting:
+            Text("Shoo will reopen momentarily.")
+                .foregroundColor(.secondary)
+                .font(.system(size: 13))
+        case .failed(let message):
+            Text(message)
+                .foregroundColor(.secondary)
+                .font(.system(size: 13))
+                .multilineTextAlignment(.center)
+        case .idle:
+            Text("Current version: v\(updater.currentVersion)")
+                .foregroundColor(.secondary)
+                .font(.system(size: 13))
+        }
+    }
+    
+    @ViewBuilder
+    private var updateButton: some View {
+        switch updater.state {
+        case .upToDate, .failed:
+            Button("Done") {
+                updater.closeWindow()
+            }
+            .keyboardShortcut(.defaultAction)
+        case .idle:
+            Button("Check Now") {
+                updater.checkForUpdates(showWindow: true)
+            }
+            .keyboardShortcut(.defaultAction)
+        default:
+            EmptyView()
         }
     }
 }
