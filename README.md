@@ -18,9 +18,9 @@ Normally, Mission Control only lets you switch windows. Shoo adds interactive "t
 
 ## Installation
 
-1. **Download** the latest `Shoo.zip` from the [Releases](https://github.com/AR-1106/Shoo/releases) page.
-2. **Unzip** the file.
-3. **Move** `Shoo.app` to your `/Applications` folder.
+1. **Download** the latest `Shoo.dmg` from the [Releases](https://github.com/AR-1106/Shoo/releases) page.
+2. **Open** the DMG file.
+3. **Drag** `Shoo.app` into your `/Applications` folder.
 
 ### ⚠️ First Launch — macOS Security Prompt
 
