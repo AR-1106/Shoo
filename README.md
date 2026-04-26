@@ -24,12 +24,18 @@ Normally, Mission Control only lets you switch windows. Shoo adds interactive "t
 
 ### ⚠️ Security Note (Important)
 
-Since Shoo is distributed directly and not via the App Store, macOS will show a security warning: *"Shoo can't be opened because Apple cannot check it for malicious software."*
+Since Shoo is distributed directly and not via the App Store, macOS attaches a "quarantine" flag when you download the zip. Because you are opening an unsigned app, macOS will show a strict error: **"Shoo.app Not Opened: Apple could not verify Shoo.app is free of malware."**
 
-**To open Shoo for the first time:**
-1. **Right-click** (or Control-click) `Shoo.app` in your Applications folder.
-2. Select **Open** from the context menu.
-3. A different dialog will appear with an **Open** button. Click it.
+Even right-clicking to open will not bypass this on modern macOS versions.
+
+**To fix this and open Shoo:**
+1. Move `Shoo.app` to your **Applications** folder.
+2. Open the **Terminal** app (you can find it using Spotlight search).
+3. Copy and paste the following command into Terminal and press Enter:
+   ```bash
+   xattr -cr /Applications/Shoo.app
+   ```
+4. Now, you can double-click `Shoo.app` in your Applications folder and it will open normally!
 
 ## Permissions
 
