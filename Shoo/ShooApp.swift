@@ -30,7 +30,7 @@ struct ShooApp: App {
     @AppStorage("defaultClickAction") private var defaultClickAction: ActionType = .close
 
     var body: some Scene {
-        MenuBarExtra("Shoo", systemImage: appState.isEnabled ? "eye" : "eye.slash") {
+        MenuBarExtra("Shoo", systemImage: appState.isEnabled ? "rectangle.badge.xmark" : "rectangle.badge.xmark") {
             Button(appState.isEnabled ? "Disable Shoo" : "Enable Shoo") {
                 appState.isEnabled.toggle()
             }
