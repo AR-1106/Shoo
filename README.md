@@ -22,20 +22,26 @@ Normally, Mission Control only lets you switch windows. Shoo adds interactive "t
 2. **Unzip** the file.
 3. **Move** `Shoo.app` to your `/Applications` folder.
 
-### ⚠️ Security Note (Important)
+### ⚠️ First Launch — macOS Security Prompt
 
-Since Shoo is distributed directly and not via the App Store, macOS attaches a "quarantine" flag when you download the zip. Because you are opening an unsigned app, macOS will show a strict error: **"Shoo.app Not Opened: Apple could not verify Shoo.app is free of malware."**
+Since Shoo is not distributed through the Mac App Store, macOS will show a security warning the first time you open it.
 
-Even right-clicking to open will not bypass this on modern macOS versions.
-
-**To fix this and open Shoo:**
+**Option A — Right-click to Open (Easiest):**
 1. Move `Shoo.app` to your **Applications** folder.
-2. Open the **Terminal** app (you can find it using Spotlight search).
-3. Copy and paste the following command into Terminal and press Enter:
-   ```bash
-   xattr -cr /Applications/Shoo.app
-   ```
-4. Now, you can double-click `Shoo.app` in your Applications folder and it will open normally!
+2. **Right-click** (or Control-click) `Shoo.app` and select **Open**.
+3. A dialog will appear — click **Open** to confirm.
+
+**Option B — System Settings:**
+1. Try to open `Shoo.app` normally (it will be blocked).
+2. Go to **System Settings** → **Privacy & Security**.
+3. Scroll down to the **Security** section — you'll see *"Shoo.app was blocked"*.
+4. Click **Open Anyway**.
+
+**Option C — Terminal (if the above don't work):**
+```bash
+xattr -cr /Applications/Shoo.app
+```
+After running this command, `Shoo.app` will open normally with a double-click.
 
 ## Permissions
 
