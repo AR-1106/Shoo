@@ -27,6 +27,7 @@ enum WindowAction {
 struct ShooApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState.shared
+    @StateObject private var updater = UpdateManager.shared
     @AppStorage("defaultClickAction") private var defaultClickAction: ActionType = .close
 
     var body: some Scene {
@@ -43,6 +44,13 @@ struct ShooApp: App {
                 }
             }
             .pickerStyle(MenuPickerStyle())
+            
+            Divider()
+            
+            Button(updater.menuLabel) {
+                updater.checkForUpdates()
+            }
+            .disabled(updater.isUpdating)
             
             Divider()
             
@@ -862,5 +870,196 @@ struct DoneView: View {
             .keyboardShortcut(.defaultAction)
         }
         .padding(32)
+    }
+}
+
+// MARK: - Update Manager
+
+class UpdateManager: ObservableObject {
+    static let shared = UpdateManager()
+    
+    private let repo = "AR-1106/Shoo"
+    private let currentVersion: String
+    
+    @Published var menuLabel: String = "Check for Updates..."
+    @Published var isUpdating: Bool = false
+    
+    init() {
+        self.currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+    }
+    
+    func checkForUpdates() {
+        guard !isUpdating else { return }
+        isUpdating = true
+        menuLabel = "Checking..."
+        
+        let urlStr = "https://api.github.com/repos/\(repo)/releases/latest"
+        guard let url = URL(string: urlStr) else {
+            fail("Invalid URL")
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                self.fail("Network error: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tagName = json["tag_name"] as? String else {
+                self.fail("Could not parse release info")
+                return
+            }
+            
+            let latestVersion = tagName.replacingOccurrences(of: "v", with: "")
+            
+            if self.isNewer(latestVersion, than: self.currentVersion) {
+                // Find the DMG asset
+                if let assets = json["assets"] as? [[String: Any]],
+                   let dmgAsset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".dmg") == true }),
+                   let downloadURL = dmgAsset["browser_download_url"] as? String {
+                    DispatchQueue.main.async {
+                        self.menuLabel = "Downloading v\(latestVersion)..."
+                    }
+                    self.downloadAndInstall(from: downloadURL, version: latestVersion)
+                } else {
+                    self.fail("No DMG found in release")
+                }
+            } else {
+                DispatchQueue.main.async {
+                    self.menuLabel = "✓ Up to date (v\(self.currentVersion))"
+                    self.isUpdating = false
+                    // Reset label after 5 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                        self.menuLabel = "Check for Updates..."
+                    }
+                }
+            }
+        }.resume()
+    }
+    
+    private func isNewer(_ remote: String, than local: String) -> Bool {
+        let r = remote.split(separator: ".").compactMap { Int($0) }
+        let l = local.split(separator: ".").compactMap { Int($0) }
+        let count = max(r.count, l.count)
+        for i in 0..<count {
+            let rv = i < r.count ? r[i] : 0
+            let lv = i < l.count ? l[i] : 0
+            if rv > lv { return true }
+            if rv < lv { return false }
+        }
+        return false
+    }
+    
+    private func downloadAndInstall(from urlStr: String, version: String) {
+        guard let url = URL(string: urlStr) else {
+            fail("Invalid download URL")
+            return
+        }
+        
+        URLSession.shared.downloadTask(with: url) { [weak self] tmpURL, response, error in
+            guard let self = self, let tmpURL = tmpURL else {
+                self?.fail("Download failed")
+                return
+            }
+            
+            do {
+                let dmgPath = "/tmp/Shoo_update.dmg"
+                let mountPoint = "/tmp/shoo_update_mount"
+                
+                // Move downloaded file
+                let fm = FileManager.default
+                if fm.fileExists(atPath: dmgPath) { try fm.removeItem(atPath: dmgPath) }
+                try fm.moveItem(at: tmpURL, to: URL(fileURLWithPath: dmgPath))
+                
+                // Mount DMG
+                let mountProc = Process()
+                mountProc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+                mountProc.arguments = ["attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse", "-quiet"]
+                try mountProc.run()
+                mountProc.waitUntilExit()
+                
+                guard mountProc.terminationStatus == 0 else {
+                    self.fail("Failed to mount DMG")
+                    return
+                }
+                
+                // Find the .app in the mounted volume
+                let appSource = "\(mountPoint)/Shoo.app"
+                guard fm.fileExists(atPath: appSource) else {
+                    self.fail("Shoo.app not found in DMG")
+                    self.unmount(mountPoint)
+                    return
+                }
+                
+                // Get the current app's path
+                let currentAppPath = Bundle.main.bundlePath
+                
+                // Create an update script that waits for the app to quit, then replaces it
+                let script = """
+                #!/bin/bash
+                sleep 1
+                rm -rf "\(currentAppPath)"
+                cp -R "\(appSource)" "\(currentAppPath)"
+                xattr -cr "\(currentAppPath)"
+                hdiutil detach "\(mountPoint)" -quiet 2>/dev/null
+                rm -f "\(dmgPath)"
+                open "\(currentAppPath)"
+                rm -f /tmp/shoo_update.sh
+                """
+                
+                let scriptPath = "/tmp/shoo_update.sh"
+                try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+                
+                // Make executable
+                let chmodProc = Process()
+                chmodProc.executableURL = URL(fileURLWithPath: "/bin/chmod")
+                chmodProc.arguments = ["+x", scriptPath]
+                try chmodProc.run()
+                chmodProc.waitUntilExit()
+                
+                // Launch the update script in background
+                let updateProc = Process()
+                updateProc.executableURL = URL(fileURLWithPath: "/bin/bash")
+                updateProc.arguments = [scriptPath]
+                try updateProc.run()
+                
+                DispatchQueue.main.async {
+                    self.menuLabel = "Restarting..."
+                    // Quit the app so the script can replace it
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        NSApplication.shared.terminate(nil)
+                    }
+                }
+                
+            } catch {
+                self.fail("Update error: \(error.localizedDescription)")
+            }
+        }.resume()
+    }
+    
+    private func unmount(_ path: String) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        proc.arguments = ["detach", path, "-quiet"]
+        try? proc.run()
+        proc.waitUntilExit()
+    }
+    
+    private func fail(_ message: String) {
+        print("[Shoo Update] \(message)")
+        DispatchQueue.main.async {
+            self.menuLabel = "Update failed"
+            self.isUpdating = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                self.menuLabel = "Check for Updates..."
+            }
+        }
     }
 }
