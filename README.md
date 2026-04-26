@@ -23,9 +23,14 @@ Normally, Mission Control only lets you switch windows. Shoo adds interactive "t
 ### ⚠️ How to Open (First Time Only)
 Because Shoo is a direct distribution (not App Store), macOS will block it on the first double-click. To bypass this:
 
-1. **Right-click** (or Control-click) `Shoo.app` in your Applications folder.
-2. Select **Open** from the menu.
-3. A popup will appear saying "macOS cannot verify the developer." Click **Open** again.
+1. **Try to open** `Shoo.app` (you will see a "cannot verify" error). Click **Done**.
+2. Open **System Settings** → **Privacy & Security**.
+3. Scroll down to the **Security** section.
+4. Click **Open Anyway** next to the message about Shoo.app.
+
+![Gatekeeper Fix](gatekeeper_fix.png)
+
+5. A final popup will appear—click **Open** to confirm.
 
 *You only have to do this once. After the first time, it will open normally with a double-click.*
 
