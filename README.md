@@ -4,44 +4,37 @@ Shoo is a minimalist macOS menu bar utility that gives you full control over you
 
 Normally, Mission Control only lets you switch windows. Shoo adds interactive "traffic light" buttons (Close and Minimize) to every window in Mission Control, allowing you to clean up your workspace without leaving the overview.
 
-![Shoo App Icon](app_icon_placeholder.png)
-
 ## Features
 
-- **Interactive Controls:** Adds Close and Minimize buttons to windows in Mission Control.
-- **Keyboard Shortcuts:** Use standard shortcuts while hovering over windows in Mission Control:
-  - `Cmd + W`: Close Window
-  - `Cmd + M`: Minimize Window
-  - `Cmd + Q`: Quit Application
-- **Smart Onboarding:** Guided setup for Accessibility permissions.
-- **Safety First:** Built-in protection against system hangs and permission revocation.
+- **Interactive Controls:** Close and Minimize buttons on every window in Mission Control.
+- **Keyboard Shortcuts** while hovering over windows in Mission Control:
+  - `Cmd + W` — Close Window
+  - `Cmd + M` — Minimize Window
+  - `Cmd + Q` — Quit Application
+- **Guided Onboarding** for Accessibility permissions.
+- **Safe Permission Handling** — gracefully handles permission revocation without system hangs.
 
 ## Installation
 
-1. **Download** the latest `Shoo.dmg` from the [Releases](https://github.com/AR-1106/Shoo/releases) page.
-2. **Open** the DMG file.
-3. **Drag** `Shoo.app` into your `/Applications` folder.
+### Quick Install (Recommended)
 
-### ⚠️ First Launch — macOS Security Prompt
+Run this in **Terminal** — it downloads, installs, and handles macOS security automatically:
 
-Since Shoo is not distributed through the Mac App Store, macOS will show a security warning the first time you open it.
-
-**Option A — Right-click to Open (Easiest):**
-1. Move `Shoo.app` to your **Applications** folder.
-2. **Right-click** (or Control-click) `Shoo.app` and select **Open**.
-3. A dialog will appear — click **Open** to confirm.
-
-**Option B — System Settings:**
-1. Try to open `Shoo.app` normally (it will be blocked).
-2. Go to **System Settings** → **Privacy & Security**.
-3. Scroll down to the **Security** section — you'll see *"Shoo.app was blocked"*.
-4. Click **Open Anyway**.
-
-**Option C — Terminal (if the above don't work):**
 ```bash
-xattr -cr /Applications/Shoo.app
+curl -fsSL https://raw.githubusercontent.com/AR-1106/Shoo/main/install.sh | bash
 ```
-After running this command, `Shoo.app` will open normally with a double-click.
+
+### Manual Install
+
+1. **Download** the latest `Shoo.dmg` from the [Releases](https://github.com/AR-1106/Shoo/releases) page.
+2. **Open** the DMG and drag `Shoo.app` into your **Applications** folder.
+3. **Remove quarantine** (required since the app is not notarized):
+   ```bash
+   xattr -cr /Applications/Shoo.app
+   ```
+4. Double-click `Shoo.app` to launch.
+
+> **Why is step 3 needed?** macOS adds a quarantine flag to all files downloaded from the internet. Without an Apple Developer certificate ($99/yr), this flag causes a "cannot verify" error. The `xattr` command removes it. The quick install above handles this automatically.
 
 ## Permissions
 
