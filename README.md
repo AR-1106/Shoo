@@ -12,17 +12,19 @@ Normally, Mission Control only lets you switch windows. Shoo adds interactive "t
   - `Cmd + M` — Minimize Window
   - `Cmd + Q` — Quit Application
 - **Guided Onboarding** for Accessibility permissions.
+- **Auto-Updates** — checks for new versions automatically.
 - **Safe Permission Handling** — gracefully handles permission revocation without system hangs.
 
 ## Installation
 
-### Quick Install (Recommended)
-
-Run this in **Terminal** — it downloads, installs, and handles macOS security automatically:
+### Homebrew (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AR-1106/Shoo/main/install.sh | bash
+brew tap AR-1106/tap
+brew install --cask shoo
 ```
+
+This handles everything automatically — no Gatekeeper warnings, no extra steps.
 
 ### Manual Install
 
@@ -34,7 +36,17 @@ curl -fsSL https://raw.githubusercontent.com/AR-1106/Shoo/main/install.sh | bash
    ```
 4. Double-click `Shoo.app` to launch.
 
-> **Why is step 3 needed?** macOS adds a quarantine flag to all files downloaded from the internet. Without an Apple Developer certificate ($99/yr), this flag causes a "cannot verify" error. The `xattr` command removes it. The quick install above handles this automatically.
+> **Why is step 3 needed?** macOS quarantines all files downloaded from a browser. Without an Apple Developer certificate ($99/yr), this triggers a "cannot verify" error. The `xattr` command removes it. Homebrew handles this automatically.
+
+## Updating
+
+### Homebrew
+```bash
+brew upgrade --cask shoo
+```
+
+### Manual
+Use **Check for Updates** from the menu bar icon, or download the latest release.
 
 ## Permissions
 
