@@ -17,46 +17,27 @@ Normally, Mission Control only lets you switch windows. Shoo adds interactive "t
 
 ## Installation
 
-### Homebrew (Recommended)
-
-```bash
-brew tap AR-1106/tap
-brew install --cask shoo
-```
-
-This handles everything automatically — no Gatekeeper warnings, no extra steps.
-
-### Manual Install
-
 1. **Download** the latest `Shoo.dmg` from the [Releases](https://github.com/AR-1106/Shoo/releases) page.
 2. **Open** the DMG and drag `Shoo.app` into your **Applications** folder.
-3. **Remove quarantine** (required since the app is not notarized):
-   ```bash
-   xattr -cr /Applications/Shoo.app
-   ```
-4. Double-click `Shoo.app` to launch.
 
-> **Why is step 3 needed?** macOS quarantines all files downloaded from a browser. Without an Apple Developer certificate ($99/yr), this triggers a "cannot verify" error. The `xattr` command removes it. Homebrew handles this automatically.
+### ⚠️ How to Open (First Time Only)
+Because Shoo is a direct distribution (not App Store), macOS will block it on the first double-click. To bypass this:
+
+1. **Right-click** (or Control-click) `Shoo.app` in your Applications folder.
+2. Select **Open** from the menu.
+3. A popup will appear saying "macOS cannot verify the developer." Click **Open** again.
+
+*You only have to do this once. After the first time, it will open normally with a double-click.*
 
 ## Updating
-
-### Homebrew
-```bash
-brew upgrade --cask shoo
-```
-
-### Manual
-Use **Check for Updates** from the menu bar icon, or download the latest release.
+Use **Check for Updates** from the menu bar icon inside the app to update automatically.
 
 ## Permissions
-
-Shoo requires **Accessibility Access** to interact with windows and detect Mission Control state. On launch, Shoo will guide you through enabling this in:
+Shoo requires **Accessibility Access** to interact with windows. On launch, Shoo will guide you through enabling this in:
 `System Settings` → `Privacy & Security` → `Accessibility`.
 
 ## Requirements
-
 - macOS 13.0 (Ventura) or later.
 
 ## License
-
 MIT License. See [LICENSE](LICENSE) for details.
