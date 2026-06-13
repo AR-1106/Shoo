@@ -65,6 +65,8 @@ struct ShooApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ProcessInfo.processInfo.disableSuddenTermination()
+        
         OnboardingManager.shared.checkPermissionOnLaunch()
         
         // Auto-check for updates on launch (after a short delay)
