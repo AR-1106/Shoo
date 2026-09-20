@@ -57,13 +57,20 @@ struct ShooApp: App {
             Divider()
             
             Button("Quit") {
-                NSApplication.shared.terminate(nil)
+                AppDelegate.quit()
             }
         }
     }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    static var isUserInitiatedQuit = false
+    
+    static func quit() {
+        isUserInitiatedQuit = true
+        NSApplication.shared.terminate(nil)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         ProcessInfo.processInfo.disableSuddenTermination()
         
@@ -78,6 +85,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 UpdateManager.shared.checkForUpdates(showWindow: false)
             }
         }
+    }
+    
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if AppDelegate.isUserInitiatedQuit {
+            return .terminateNow
+        }
+        print("[Shoo] Ignoring termination request from system (likely menu bar icon hidden)")
+        return .terminateCancel
     }
 }
 
@@ -123,7 +138,6 @@ class AppState: ObservableObject {
 
     private var timer: Timer?
     private var overlayControllers: [CGWindowID: OverlayWindowController] = [:]
-    private var cachedAXWindows: [CGWindowID: AXUIElement] = [:]
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -147,8 +161,7 @@ class AppState: ObservableObject {
 
     func startMonitoring() {
         print("[Shoo] Starting monitoring...")
-        refreshAXCache()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             self?.tick()
         }
         attemptEventTapSetup()
@@ -160,7 +173,6 @@ class AppState: ObservableObject {
         timer = nil
         removeEventTap()
         removeGlobalMonitors()
-        cachedAXWindows.removeAll()
     }
 
     private func tick() {
@@ -171,7 +183,6 @@ class AppState: ObservableObject {
         }
         let isMC = isMissionControlActive()
         if !isMC {
-            refreshAXCache()
             hideAllOverlays()
         } else {
             updateOverlays()
@@ -182,34 +193,29 @@ class AppState: ObservableObject {
         let options = CGWindowListOption(arrayLiteral: .excludeDesktopElements, .optionOnScreenOnly)
         guard let windowInfoList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return false }
 
+        let dockPid = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == "com.apple.dock" })?.processIdentifier
+        // macOS 27 moved the exposé surface from Dock@18 to WindowManager@19
+        let windowManagerPid = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == "com.apple.WindowManager" })?.processIdentifier
+
         for info in windowInfoList {
-            if let owner = info[kCGWindowOwnerName as String] as? String, owner == "Dock",
-               let layer = info[kCGWindowLayer as String] as? Int, layer == 18 {
+            guard let layer = info[kCGWindowLayer as String] as? Int,
+                  let ownerPid = info[kCGWindowOwnerPID as String] as? pid_t else {
+                continue
+            }
+            // macOS ≤26: Dock owns the exposé surface at layer 18
+            if layer == 18, let dockPid, ownerPid == dockPid {
+                return true
+            }
+            // macOS 27+: WindowManager owns one screen-sized layer-19 window per display
+            if layer == 19, let windowManagerPid, ownerPid == windowManagerPid {
                 return true
             }
         }
         return false
     }
 
-    private func refreshAXCache() {
-        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-        for app in apps {
-            let pid = app.processIdentifier
-            if pid == ProcessInfo.processInfo.processIdentifier { continue }
-
-            let appElement = AXUIElementCreateApplication(pid)
-            var value: CFTypeRef?
-            if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
-               let axWindows = value as? [AXUIElement] {
-                for axWindow in axWindows {
-                    var winId: CGWindowID = 0
-                    if _AXUIElementGetWindow(axWindow, &winId) == .success && winId != 0 {
-                        cachedAXWindows[winId] = axWindow
-                    }
-                }
-            }
-        }
-    }
 
     private func updateOverlays() {
         let options = CGWindowListOption(arrayLiteral: .excludeDesktopElements, .optionOnScreenOnly)
@@ -219,6 +225,10 @@ class AppState: ObservableObject {
         let myPid = ProcessInfo.processInfo.processIdentifier
         let dockPid = NSWorkspace.shared.runningApplications
             .first(where: { $0.bundleIdentifier == "com.apple.dock" })?.processIdentifier ?? 0
+        // WindowManager draws a layer-0 hover-highlight over thumbnails on macOS 27;
+        // excluding it prevents that chrome from eating hover/hit-testing.
+        let windowManagerPid = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == "com.apple.WindowManager" })?.processIdentifier ?? 0
 
         for info in windowInfoList {
             guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
@@ -228,7 +238,7 @@ class AppState: ObservableObject {
                 continue
             }
 
-            if ownerPid == myPid || ownerPid == dockPid { continue }
+            if ownerPid == myPid || ownerPid == dockPid || ownerPid == windowManagerPid { continue }
 
             let rect = CGRect(
                 x: boundsDict["X"] as? CGFloat ?? 0,
@@ -537,7 +547,6 @@ class AppState: ObservableObject {
     }
     
     private func getAXWindow(for windowInfo: WindowInfo) -> AXUIElement? {
-        if let cached = cachedAXWindows[windowInfo.id] { return cached }
         let appElement = AXUIElementCreateApplication(windowInfo.pid)
         var value: CFTypeRef?
         if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
@@ -555,7 +564,6 @@ class AppState: ObservableObject {
     private func removeOverlay(for id: CGWindowID) {
         overlayControllers[id]?.close()
         overlayControllers.removeValue(forKey: id)
-        cachedAXWindows.removeValue(forKey: id)
     }
 }
 
@@ -802,7 +810,7 @@ struct WelcomeView: View {
             
             HStack {
                 Button("Quit") {
-                    NSApplication.shared.terminate(nil)
+                    AppDelegate.quit()
                 }
                 .keyboardShortcut(.cancelAction)
                 
@@ -1090,7 +1098,7 @@ class UpdateManager: ObservableObject {
                 DispatchQueue.main.async {
                     self.state = .restarting
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        NSApplication.shared.terminate(nil)
+                        AppDelegate.quit()
                     }
                 }
                 
