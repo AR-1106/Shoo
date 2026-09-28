@@ -2,6 +2,7 @@ import SwiftUI
 import ApplicationServices
 import Combine
 import Foundation
+import UniformTypeIdentifiers
 
 // MARK: - Enums
 
@@ -32,31 +33,35 @@ struct ShooApp: App {
     @AppStorage("autoCheckForUpdates") private var autoCheckForUpdates: Bool = true
 
     var body: some Scene {
-        MenuBarExtra("Shoo", systemImage: appState.isEnabled ? "rectangle.badge.xmark" : "rectangle.badge.xmark") {
-            Button(appState.isEnabled ? "Disable Shoo" : "Enable Shoo") {
+        MenuBarExtra("Shoo", systemImage: "rectangle.badge.xmark") {
+            Button(appState.isEnabled ? "Disable" : "Enable") {
                 appState.isEnabled.toggle()
             }
             
             Divider()
             
-            Picker("Default X Button Action", selection: $defaultClickAction) {
+            Picker("Close Button", selection: $defaultClickAction) {
                 ForEach(ActionType.allCases, id: \.self) { type in
                     Text(type.rawValue).tag(type)
                 }
             }
-            .pickerStyle(MenuPickerStyle())
             
-            Divider()
-            
-            Button("Check for Updates...") {
-                updater.checkForUpdates(showWindow: true)
+            Button("Keep Running Apps…") {
+                KeepRunningAppsManager.shared.show()
             }
             
-            Toggle("Auto-Check for Updates", isOn: $autoCheckForUpdates)
+            Divider()
+            
+            Menu("Updates") {
+                Button("Check Now…") {
+                    updater.checkForUpdates(showWindow: true)
+                }
+                Toggle("Check Automatically", isOn: $autoCheckForUpdates)
+            }
             
             Divider()
             
-            Button("Quit") {
+            Button("Quit Shoo") {
                 AppDelegate.quit()
             }
         }
@@ -530,6 +535,14 @@ class AppState: ObservableObject {
             }
             
         case .close:
+            // Closing the last window of an app leaves it running in the Dock
+            // (the small indicator dot). Quit instead so the app fully exits —
+            // unless the app is on the keep-running list (e.g. Claude for shortcuts).
+            if closableWindowCount(for: windowInfo.pid) <= 1,
+               !KeepRunningAppsManager.shared.shouldKeepRunning(pid: windowInfo.pid) {
+                quitApp(for: windowInfo)
+                return
+            }
             if let axWindow = getAXWindow(for: windowInfo) {
                 var closeBtnValue: CFTypeRef?
                 if AXUIElementCopyAttributeValue(axWindow, kAXCloseButtonAttribute as CFString, &closeBtnValue) == .success {
@@ -544,6 +557,34 @@ class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    private func quitApp(for windowInfo: WindowInfo) {
+        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == windowInfo.pid }) {
+            app.terminate()
+            print("[Shoo] ✅ Quit app \(windowInfo.pid) (last window closed)")
+            removeOverlays(forPid: windowInfo.pid)
+        } else {
+            print("[Shoo] ❌ Could not find NSRunningApplication for pid \(windowInfo.pid)")
+        }
+    }
+
+    /// Number of closable standard windows owned by `pid` (AX windows with a close button).
+    private func closableWindowCount(for pid: pid_t) -> Int {
+        let appElement = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
+           let windows = value as? [AXUIElement] {
+            let count = windows.filter { axWindow in
+                var winId: CGWindowID = 0
+                guard _AXUIElementGetWindow(axWindow, &winId) == .success, winId != 0 else { return false }
+                var closeBtn: CFTypeRef?
+                return AXUIElementCopyAttributeValue(axWindow, kAXCloseButtonAttribute as CFString, &closeBtn) == .success
+            }.count
+            if count > 0 { return count }
+        }
+        // Fallback while Mission Control is active: count Shoo overlays for this app
+        return overlayControllers.values.filter { $0.windowInfo.pid == pid }.count
     }
     
     private func getAXWindow(for windowInfo: WindowInfo) -> AXUIElement? {
@@ -564,6 +605,13 @@ class AppState: ObservableObject {
     private func removeOverlay(for id: CGWindowID) {
         overlayControllers[id]?.close()
         overlayControllers.removeValue(forKey: id)
+    }
+
+    private func removeOverlays(forPid pid: pid_t) {
+        let ids = overlayControllers.filter { $0.value.windowInfo.pid == pid }.map(\.key)
+        for id in ids {
+            removeOverlay(for: id)
+        }
     }
 }
 
@@ -678,6 +726,227 @@ struct TrafficLightButtonView: View {
         }
     }
 }
+
+// MARK: - Keep Running Apps
+
+struct KeepRunningAppEntry: Identifiable, Equatable {
+    var id: String { bundleID }
+    let bundleID: String
+    let name: String
+    let icon: NSImage?
+}
+
+class KeepRunningAppsManager: ObservableObject {
+    static let shared = KeepRunningAppsManager()
+    
+    static let defaultsKey = "keepRunningBundleIDs"
+    static let defaultBundleIDs: [String] = [
+        "com.anthropic.claudefordesktop", // Claude — needs to stay alive for shortcuts
+    ]
+    
+    @Published private(set) var bundleIDs: [String]
+    private var window: NSWindow?
+    
+    init() {
+        if let stored = UserDefaults.standard.array(forKey: Self.defaultsKey) as? [String] {
+            self.bundleIDs = stored
+        } else {
+            self.bundleIDs = Self.defaultBundleIDs
+            UserDefaults.standard.set(Self.defaultBundleIDs, forKey: Self.defaultsKey)
+        }
+    }
+    
+    func shouldKeepRunning(pid: pid_t) -> Bool {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == pid }),
+              let bundleID = app.bundleIdentifier else {
+            return false
+        }
+        return bundleIDs.contains(bundleID)
+    }
+    
+    func isKeptRunning(_ bundleID: String) -> Bool {
+        bundleIDs.contains(bundleID)
+    }
+    
+    func setKeptRunning(_ bundleID: String, enabled: Bool) {
+        if enabled {
+            guard !bundleID.isEmpty, !bundleIDs.contains(bundleID) else { return }
+            bundleIDs.append(bundleID)
+        } else {
+            bundleIDs.removeAll { $0 == bundleID }
+        }
+        persist()
+    }
+    
+    private func persist() {
+        UserDefaults.standard.set(bundleIDs, forKey: Self.defaultsKey)
+        objectWillChange.send()
+    }
+    
+    /// Running regular apps, plus any keep-running apps that aren't currently open.
+    func listedApps() -> [KeepRunningAppEntry] {
+        var byID: [String: KeepRunningAppEntry] = [:]
+        
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            guard let id = app.bundleIdentifier else { continue }
+            byID[id] = KeepRunningAppEntry(
+                bundleID: id,
+                name: app.localizedName ?? id,
+                icon: app.icon
+            )
+        }
+        
+        for id in bundleIDs where byID[id] == nil {
+            byID[id] = entry(for: id)
+        }
+        
+        return byID.values.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+    
+    private func entry(for bundleID: String) -> KeepRunningAppEntry {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            return KeepRunningAppEntry(
+                bundleID: bundleID,
+                name: FileManager.default.displayName(atPath: url.path),
+                icon: NSWorkspace.shared.icon(forFile: url.path)
+            )
+        }
+        return KeepRunningAppEntry(bundleID: bundleID, name: bundleID, icon: nil)
+    }
+    
+    func show() {
+        DispatchQueue.main.async {
+            if self.window == nil {
+                let view = KeepRunningAppsView().environmentObject(self)
+                let win = NSWindow(
+                    contentRect: NSRect(x: 0, y: 0, width: 420, height: 420),
+                    styleMask: [.titled, .closable, .fullSizeContentView],
+                    backing: .buffered, defer: false)
+                win.isReleasedWhenClosed = false
+                win.titlebarAppearsTransparent = true
+                win.titleVisibility = .hidden
+                win.isMovableByWindowBackground = true
+                win.contentView = NSHostingView(rootView: view)
+                win.center()
+                self.window = win
+            }
+            self.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+    
+    func closeWindow() {
+        window?.close()
+        window = nil
+    }
+    
+    /// Pick any .app from disk (does not need to be running) and add it to the list.
+    func browseAndAddApp() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose an Application"
+        panel.prompt = "Add"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.treatsFilePackagesAsDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        
+        // Present relative to our settings window when possible
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .OK else { return }
+            for url in panel.urls {
+                guard let bundle = Bundle(url: url),
+                      let bundleID = bundle.bundleIdentifier else { continue }
+                self.setKeptRunning(bundleID, enabled: true)
+            }
+        }
+        
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(panel.runModal())
+        }
+    }
+}
+
+struct KeepRunningAppsView: View {
+    @EnvironmentObject var manager: KeepRunningAppsManager
+    
+    private var apps: [KeepRunningAppEntry] {
+        manager.listedApps()
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Keep Running Apps")
+                .font(.system(size: 20, weight: .bold))
+            
+            Text("Checked apps stay open after you close their last window — useful for background tools like Claude.")
+                .font(.system(size: 13))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            
+            List {
+                ForEach(apps) { entry in
+                    KeepRunningAppRow(entry: entry)
+                }
+            }
+            .listStyle(.inset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(8)
+            
+            HStack {
+                Button("Add App…") {
+                    manager.browseAndAddApp()
+                }
+                Spacer()
+                Button("Done") {
+                    manager.closeWindow()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 420, height: 420)
+    }
+}
+
+struct KeepRunningAppRow: View {
+    @EnvironmentObject var manager: KeepRunningAppsManager
+    let entry: KeepRunningAppEntry
+    
+    private var isOn: Binding<Bool> {
+        Binding(
+            get: { manager.isKeptRunning(entry.bundleID) },
+            set: { manager.setKeptRunning(entry.bundleID, enabled: $0) }
+        )
+    }
+    
+    var body: some View {
+        Toggle(isOn: isOn) {
+            HStack(spacing: 10) {
+                if let icon = entry.icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 24, height: 24)
+                } else {
+                    Image(systemName: "app")
+                        .frame(width: 24, height: 24)
+                        .foregroundColor(.secondary)
+                }
+                Text(entry.name)
+                    .lineLimit(1)
+            }
+        }
+        .toggleStyle(.checkbox)
+        .padding(.vertical, 2)
+    }
+}
+
 import SwiftUI
 import ApplicationServices
 
